@@ -1,0 +1,188 @@
+import os
+import time
+import requests
+from time import sleep
+
+# --- CONFIG ---
+DEFAULT_URL = "https://youtu.be/C4dumlS4Fm8?si=i-egtzoyjA1NEkIw"
+API_KEY = "a6f23c4613214db7afbfee07e9f6d61e"  # Replace with your actual key
+
+# --- IMPORT pytubefix ---
+try:
+    from pytubefix import YouTube
+except ModuleNotFoundError:
+    print("⚠️ 'pytubefix' not found. Run 'pip install pytubefix'.")
+    raise
+
+# --- GET VIDEO URL ---
+def get_video_url():
+    try:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-i', '--input', help='YouTube video URL')
+        args = parser.parse_args()
+        return args.input if args.input else DEFAULT_URL
+    except SystemExit:
+        return DEFAULT_URL
+
+# --- DOWNLOAD AUDIO ---
+def download_audio(url: str, output_path: str = ".") -> str:
+    try:
+        yt = YouTube(url)
+        audio_stream = yt.streams.get_audio_only()
+        downloaded_path = audio_stream.download(output_path=output_path)
+        print(f"✅ Audio downloaded to: {downloaded_path}")
+        return downloaded_path
+    except Exception as e:
+        print(f"❌ Failed to download audio: {e}")
+        raise
+
+# --- CREATE SESSION WITH RETRY ---
+def create_session():
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    retry = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+# --- UPLOAD AUDIO ---
+def upload_audio(filename: str, api_key: str) -> str:
+    def read_file(filename, chunk_size=5242880):
+        with open(filename, 'rb') as _file:
+            while True:
+                data = _file.read(chunk_size)
+                if not data:
+                    break
+                yield data
+
+    session = create_session()
+    headers = {'authorization': api_key}
+    try:
+        response = session.post('https://api.assemblyai.com/v2/upload',
+                                headers=headers,
+                                data=read_file(filename))
+        response.raise_for_status()
+        upload_url = response.json()['upload_url']
+        print("✅ Audio uploaded to AssemblyAI.")
+        return upload_url
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"❌ Upload failed: {e}")
+
+# --- REQUEST TRANSCRIPTION ---
+def request_transcription(audio_url: str, api_key: str) -> str:
+    session = create_session()
+    endpoint = "https://api.assemblyai.com/v2/transcript"
+    headers = {"authorization": api_key, "content-type": "application/json"}
+    try:
+        response = session.post(endpoint, json={"audio_url": audio_url}, headers=headers)
+        response.raise_for_status()
+        transcript_id = response.json()["id"]
+        print("✅ Transcription requested.")
+        return transcript_id
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"❌ Transcription request failed: {e}")
+
+# --- POLL FOR RESULT ---
+def get_transcription_result(transcript_id: str, api_key: str) -> dict:
+    session = create_session()
+    endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
+    headers = {"authorization": api_key}
+    while True:
+        try:
+            response = session.get(endpoint, headers=headers)
+            response.raise_for_status()
+            status = response.json()['status']
+            if status == 'completed':
+                print("✅ Transcription completed.")
+                return response.json()
+            elif status == 'error':
+                raise Exception(f"❌ Transcription failed: {response.json().get('error')}")
+            else:
+                print("⏳ Transcription in progress...")
+                sleep(5)
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Polling error: {e}")
+            sleep(5)
+
+# --- SAVE TRANSCRIPT ---
+def save_transcript(text: str, transcript_id: str, api_key: str):
+    with open("yt.txt", "w", encoding="utf-8") as txt_file:
+        txt_file.write(text)
+    print("📄 Saved transcript as yt.txt")
+
+    session = create_session()
+    srt_endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}/srt"
+    headers = {"authorization": api_key}
+    try:
+        srt_response = session.get(srt_endpoint, headers=headers)
+        srt_response.raise_for_status()
+        with open("yt.srt", "w", encoding="utf-8") as srt_file:
+            srt_file.write(srt_response.text)
+        print("📄 Saved subtitles as yt.srt")
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Failed to fetch SRT: {e}")
+
+# --- MAIN ---
+if __name__ == "__main__":
+    video_url = get_video_url()
+    mp4_path = download_audio(video_url)
+    audio_url = upload_audio(mp4_path, API_KEY)
+    transcript_id = request_transcription(audio_url, API_KEY)
+    transcript_data = get_transcription_result(transcript_id, API_KEY)
+
+    print("\n📝 Transcribed Text:\n")
+    print(transcript_data["text"])
+    save_transcript(transcript_data["text"], transcript_id, API_KEY)
+
+
+# app.py
+
+import streamlit as st
+
+# --- CONFIG ---
+api_key = "a6f23c4613214db7afbfee07e9f6d61e"
+
+API_KEY = st.secrets['api_key']  # Secure internal use
+
+# --- UI Setup ---
+st.markdown('# 📝 **Transcriber App**')
+bar = st.progress(0)
+st.warning('Please enter a YouTube video URL in the sidebar.')
+
+# --- Sidebar Input ---
+st.sidebar.header('Input')
+with st.sidebar.form(key='my_form'):
+    URL = st.text_input('Enter YouTube video URL:')
+    submit_button = st.form_submit_button(label='Transcribe')
+
+# --- Main Workflow ---
+if submit_button and URL:
+    try:
+        bar.progress(10)
+        mp4_path = download_audio(URL)
+        bar.progress(30)
+        audio_url = upload_audio(mp4_path, API_KEY)
+        bar.progress(50)
+        transcript_id = request_transcription(audio_url, API_KEY)
+        bar.progress(70)
+        transcript_data = get_transcription_result(transcript_id, API_KEY)
+        bar.progress(90)
+        save_transcript_files(transcript_data["text"], transcript_id, API_KEY)
+        bar.progress(100)
+
+        st.success("✅ Transcription completed!")
+        st.text_area("📝 Transcript Preview", transcript_data["text"], height=300)
+
+        with open("transcription.zip", "rb") as zip_download:
+            st.download_button(
+                label="📥 Download Transcription ZIP",
+                data=zip_download,
+                file_name="transcription.zip",
+                mime="application/zip"
+            )
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
