@@ -1,5 +1,6 @@
 streamlit==1.2.0
-pytube==11.0.1
+pytubefix
 requests
 urllib3
 protobuf==3.20.3
+setuptools
