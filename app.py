@@ -1,170 +1,56 @@
-import argparse
-
-# Parse argument
-parser = argparse.ArgumentParser(prog='transcriber')
-parser.add_argument('-i', help='Enter the URL of YouTube video')
-args = parser.parse_args()
-
-# 1. Read API from text file
-f = open("api.txt", "r")
-api_key = f.read()
-
-print('1. API is read ...')
-
-# 2. Retrieving audio file from YouTube video
-from pytube import YouTube
 import os
-
-#video = YouTube("https://www.youtube.com/watch?v=mkVjrB8g6mM")
-video = YouTube(args.i)
-yt = video.streams.get_audio_only()
-
-yt.download()
-
-current_dir = os.getcwd()
-
-for file in os.listdir(current_dir):
-    if file.endswith(".mp4"):
-        mp4_file = os.path.join(current_dir, file)
-        #print(mp4_file)
-
-print('2. Audio file has been retrieved from YouTube video')
-
-# 3. Upload YouTube audio file to AssemblyAI
-
-import sys
 import time
 import requests
-
-filename = mp4_file
-
-def read_file(filename, chunk_size=5242880):
-    with open(filename, 'rb') as _file:
-        while True:
-            data = _file.read(chunk_size)
-            if not data:
-                break
-            yield data
- 
-headers = {'authorization': api_key}
-response = requests.post('https://api.assemblyai.com/v2/upload',
-                         headers=headers,
-                         data=read_file(filename))
-
-audio_url = response.json()['upload_url']
-
-print('3. YouTube audio file has been uploaded to AssemblyAI')
-
-
-# 4. Transcribe uploaded audio file
-
-import requests
-
-endpoint = "https://api.assemblyai.com/v2/transcript"
-
-json = {
-  "audio_url": audio_url
-}
-
-headers = {
-    "authorization": api_key,
-    "content-type": "application/json"
-}
-
-transcript_input_response = requests.post(endpoint, json=json, headers=headers)
-
-print('4. Transcribing uploaded file')
-
-
-# 5. Extract transcript ID
-
-transcript_id = transcript_input_response.json()["id"]
-
-print('5. Extract transcript ID')
-
-# 6. Retrieve transcription results
-endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
-headers = {
-    "authorization": api_key,
-}
-
-transcript_output_response = requests.get(endpoint, headers=headers)
-
-print('6. Retrieve transcription results')
-
-# Check if transcription is complete
 from time import sleep
 
-while transcript_output_response.json()['status'] != 'completed':
-  sleep(5)
-  print('Transcription is processing ...')
-  transcript_output_response = requests.get(endpoint, headers=headers)
+# --- CONFIG ---
+DEFAULT_URL = "https://youtu.be/tas_30CdOss?si=LSx_UFIWmDkPkyh4"
+API_KEY = "a6f23c4613214db7afbfee07e9f6d61e"  # Replace with your actual key
 
+# --- IMPORT pytubefix ---
+try:
+    from pytubefix import YouTube
+except ModuleNotFoundError:
+    print("⚠️ 'pytubefix' not found. Run 'pip install pytubefix'.")
+    raise
 
-#print(transcript_output_response.json()["status"])
+# --- GET VIDEO URL ---
+def get_video_url():
+    try:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-i', '--input', help='YouTube video URL')
+        args = parser.parse_args()
+        return args.input if args.input else DEFAULT_URL
+    except SystemExit:
+        return DEFAULT_URL
 
+# --- DOWNLOAD AUDIO ---
+def download_audio(url: str, output_path: str = ".") -> str:
+    try:
+        yt = YouTube(url)
+        audio_stream = yt.streams.get_audio_only()
+        downloaded_path = audio_stream.download(output_path=output_path)
+        print(f"✅ Audio downloaded to: {downloaded_path}")
+        return downloaded_path
+    except Exception as e:
+        print(f"❌ Failed to download audio: {e}")
+        raise
 
-# 7. Print transcribed text
+# --- CREATE SESSION WITH RETRY ---
+def create_session():
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 
-print('----------\n')
-print('Output:\n')
-print(transcript_output_response.json()["text"])
+    session = requests.Session()
+    retry = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
-
-# 8. Save transcribed text to file
-
-# Save as TXT file
-yt_txt = open('yt.txt', 'w')
-yt_txt.write(transcript_output_response.json()["text"])
-yt_txt.close()
-
-# Save as SRT file
-srt_endpoint = endpoint + "/srt"
-srt_response = requests.get(srt_endpoint, headers=headers)
-
-with open("yt.srt", "w") as _file:
-    _file.write(srt_response.text)
-
-
-
-
-#--------------------------Front End-----------------------------------------------------
-
-
-import streamlit as st
-from pytube import YouTube
-import os
-import sys
-import time
-import requests
-from zipfile import ZipFile
-
-st.markdown('# 📝 **Transcriber App**')
-bar = st.progress(0)
-
-# Custom functions 
-
-# 2. Retrieving audio file from YouTube video
-def get_yt(URL):
-    video = YouTube(URL)
-    yt = video.streams.get_audio_only()
-    yt.download()
-
-    #st.info('2. Audio file has been retrieved from YouTube video')
-    bar.progress(10)
-
-# 3. Upload YouTube audio file to AssemblyAI
-def transcribe_yt():
-
-    current_dir = os.getcwd()
-
-    for file in os.listdir(current_dir):
-        if file.endswith(".mp4"):
-            mp4_file = os.path.join(current_dir, file)
-            #print(mp4_file)
-    filename = mp4_file
-    bar.progress(20)
-
+# --- UPLOAD AUDIO ---
+def upload_audio(filename: str, api_key: str) -> str:
     def read_file(filename, chunk_size=5242880):
         with open(filename, 'rb') as _file:
             while True:
@@ -172,104 +58,145 @@ def transcribe_yt():
                 if not data:
                     break
                 yield data
+
+    session = create_session()
     headers = {'authorization': api_key}
-    response = requests.post('https://api.assemblyai.com/v2/upload',
-                            headers=headers,
-                            data=read_file(filename))
-    audio_url = response.json()['upload_url']
-    #st.info('3. YouTube audio file has been uploaded to AssemblyAI')
-    bar.progress(30)
+    try:
+        response = session.post('https://api.assemblyai.com/v2/upload',
+                                headers=headers,
+                                data=read_file(filename))
+        response.raise_for_status()
+        upload_url = response.json()['upload_url']
+        print("✅ Audio uploaded to AssemblyAI.")
+        return upload_url
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"❌ Upload failed: {e}")
 
-    # 4. Transcribe uploaded audio file
+# --- REQUEST TRANSCRIPTION ---
+def request_transcription(audio_url: str, api_key: str) -> str:
+    session = create_session()
     endpoint = "https://api.assemblyai.com/v2/transcript"
+    headers = {"authorization": api_key, "content-type": "application/json"}
+    try:
+        response = session.post(endpoint, json={"audio_url": audio_url}, headers=headers)
+        response.raise_for_status()
+        transcript_id = response.json()["id"]
+        print("✅ Transcription requested.")
+        return transcript_id
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"❌ Transcription request failed: {e}")
 
-    json = {
-    "audio_url": audio_url
-    }
-
-    headers = {
-        "authorization": api_key,
-        "content-type": "application/json"
-    }
-
-    transcript_input_response = requests.post(endpoint, json=json, headers=headers)
-
-    #st.info('4. Transcribing uploaded file')
-    bar.progress(40)
-
-    # 5. Extract transcript ID
-    transcript_id = transcript_input_response.json()["id"]
-    #st.info('5. Extract transcript ID')
-    bar.progress(50)
-
-    # 6. Retrieve transcription results
+# --- POLL FOR RESULT ---
+def get_transcription_result(transcript_id: str, api_key: str) -> dict:
+    session = create_session()
     endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
-    headers = {
-        "authorization": api_key,
-    }
-    transcript_output_response = requests.get(endpoint, headers=headers)
-    #st.info('6. Retrieve transcription results')
-    bar.progress(60)
+    headers = {"authorization": api_key}
+    while True:
+        try:
+            response = session.get(endpoint, headers=headers)
+            response.raise_for_status()
+            status = response.json()['status']
+            if status == 'completed':
+                print("✅ Transcription completed.")
+                return response.json()
+            elif status == 'error':
+                raise Exception(f"❌ Transcription failed: {response.json().get('error')}")
+            else:
+                print("⏳ Transcription in progress...")
+                sleep(5)
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Polling error: {e}")
+            sleep(5)
 
-    # Check if transcription is complete
-    from time import sleep
+# --- SAVE TRANSCRIPT ---
+def save_transcript(text: str, transcript_id: str, api_key: str):
+    with open("yt.txt", "w", encoding="utf-8") as txt_file:
+        txt_file.write(text)
+    print("📄 Saved transcript as yt.txt")
 
-    while transcript_output_response.json()['status'] != 'completed':
-        sleep(5)
-        st.warning('Transcription is processing ...')
-        transcript_output_response = requests.get(endpoint, headers=headers)
-    
-    bar.progress(100)
+    session = create_session()
+    srt_endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}/srt"
+    headers = {"authorization": api_key}
+    try:
+        srt_response = session.get(srt_endpoint, headers=headers)
+        srt_response.raise_for_status()
+        with open("yt.srt", "w", encoding="utf-8") as srt_file:
+            srt_file.write(srt_response.text)
+        print("📄 Saved subtitles as yt.srt")
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Failed to fetch SRT: {e}")
 
-    # 7. Print transcribed text
-    st.header('Output')
-    st.success(transcript_output_response.json()["text"])
+# --- MAIN ---
+if __name__ == "__main__":
+    video_url = get_video_url()
+    mp4_path = download_audio(video_url)
+    audio_url = upload_audio(mp4_path, API_KEY)
+    transcript_id = request_transcription(audio_url, API_KEY)
+    transcript_data = get_transcription_result(transcript_id, API_KEY)
 
-    # 8. Save transcribed text to file
+    print("\n📝 Transcribed Text:\n")
+    print(transcript_data["text"])
+    save_transcript(transcript_data["text"], transcript_id, API_KEY)
 
-    # Save as TXT file
-    yt_txt = open('yt.txt', 'w')
-    yt_txt.write(transcript_output_response.json()["text"])
-    yt_txt.close()
+# app.py
 
-    # Save as SRT file
-    srt_endpoint = endpoint + "/srt"
-    srt_response = requests.get(srt_endpoint, headers=headers)
-    with open("yt.srt", "w") as _file:
-        _file.write(srt_response.text)
-    
-    zip_file = ZipFile('transcription.zip', 'w')
-    zip_file.write('yt.txt')
-    zip_file.write('yt.srt')
-    zip_file.close()
-#####
+import streamlit as st
+from transcriber_backend import (
+    download_audio,
+    upload_audio,
+    request_transcription,
+    get_transcription_result,
+    save_transcript_files
+)
+# app.py
 
-# The App
+import streamlit as st
+from transcriber_backend import (
+    download_audio,
+    upload_audio,
+    request_transcription,
+    get_transcription_result,
+    save_transcript_files
+)
 
-# 1. Read API from text file
-api_key = st.secrets['api_key']
+# --- CONFIG ---
+API_KEY = st.secrets['api_key']  # Secure internal use
 
-#st.info('1. API is read ...')
-st.warning('Awaiting URL input in the sidebar.')
+# --- UI Setup ---
+st.markdown('# 📝 **Transcriber App**')
+bar = st.progress(0)
+st.warning('Please enter a YouTube video URL in the sidebar.')
 
-
-# Sidebar
-st.sidebar.header('Input parameter')
-
-
+# --- Sidebar Input ---
+st.sidebar.header('Input')
 with st.sidebar.form(key='my_form'):
-	URL = st.text_input('Enter URL of YouTube video:')
-	submit_button = st.form_submit_button(label='Go')
+    URL = st.text_input('Enter YouTube video URL:')
+    submit_button = st.form_submit_button(label='Transcribe')
 
-# Run custom functions if URL is entered 
-if submit_button:
-    get_yt(URL)
-    transcribe_yt()
+# --- Main Workflow ---
+if submit_button and URL:
+    try:
+        bar.progress(10)
+        mp4_path = download_audio(URL)
+        bar.progress(30)
+        audio_url = upload_audio(mp4_path, API_KEY)
+        bar.progress(50)
+        transcript_id = request_transcription(audio_url, API_KEY)
+        bar.progress(70)
+        transcript_data = get_transcription_result(transcript_id, API_KEY)
+        bar.progress(90)
+        save_transcript_files(transcript_data["text"], transcript_id, API_KEY)
+        bar.progress(100)
 
-    with open("transcription.zip", "rb") as zip_download:
-        btn = st.download_button(
-            label="Download ZIP",
-            data=zip_download,
-            file_name="transcription.zip",
-            mime="application/zip"
-        )
+        st.success("✅ Transcription completed!")
+        st.text_area("📝 Transcript Preview", transcript_data["text"], height=300)
+
+        with open("transcription.zip", "rb") as zip_download:
+            st.download_button(
+                label="📥 Download Transcription ZIP",
+                data=zip_download,
+                file_name="transcription.zip",
+                mime="application/zip"
+            )
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
